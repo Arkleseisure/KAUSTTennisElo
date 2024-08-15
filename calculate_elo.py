@@ -18,6 +18,11 @@ starting_matches = 5  # Number of games before a player is considered for regula
 # A player's first elo goes off their score in their first game, if one player scores 0,
 # this would give an infinite rating gap, so the loser is given a point.
 zero_score = 1
+points_per_game = 6.5  # number of points won in an average game (to define relative intensity of tiebreaks and sets)
+games_per_intensity_unit = 2  # we're using one intensity unit as being one service game per player.
+games_vs_preliminary_weight = 0.5  # how much do games against other preliminary players count
+# towards the number of starting matches
+
 
 
 # Function to calculate the expected score based on two players' Elo ratings
@@ -32,10 +37,10 @@ def calculate_match_intensity(scores, match_type):
 
     # Adjust the scaling for matches that are just tiebreaks
     if match_type == 'points':
-        total_games /= 6.5
+        total_games /= points_per_game
 
     # K-factor proportional to the length of the match
-    return total_games / 2
+    return total_games / games_per_intensity_unit
 
 
 def get_game_score_from_points_score(winner_score):
@@ -127,6 +132,7 @@ for index, game in games.iterrows():
     players = [game['winner'], game['loser']]  # Extract the players from the game data
     scores = [game['win_score'], game['lose_score']]  # Extract the scores from the game data
     match_type = game['type']  # Get the match type (e.g., 'games' or 'points')
+    match_date = game['date']
     is_preliminary = [False, False]  # Initialize flags for preliminary players
     elos = [0, 0]  # Initialize Elo ratings for the players
 
@@ -183,26 +189,30 @@ for index, game in games.iterrows():
     # Update the Elo scores in the appropriate dataframes
     for i in range(2):
         if is_preliminary[i]:  # Handle updates for the preliminary player
+            game_weight = 1
+            if is_preliminary[1 - i]:
+                game_weight = games_vs_preliminary_weight
+
             matches_played = prelim_elo_scores.loc[prelim_elo_scores['player'] == players[i], 'games'].values[0] \
                 if players[i] in prelim_elo_scores['player'].values else 0
             if matches_played == 0:  # If this is the player's first game
                 new_elos[i] = find_elo(elos[1 - i], scores[1 - i], scores[i])
-                new_row = pd.DataFrame({'player': [players[i]], 'elo': [new_elos[i]], 'games': [1]})
+                new_row = pd.DataFrame({'player': [players[i]], 'elo': [new_elos[i]], 'games': [game_weight]})
                 prelim_elo_scores = pd.concat([prelim_elo_scores, new_row], ignore_index=True)
-            elif matches_played == starting_matches - 1:  # If player has finished preliminary games
+            elif matches_played >= starting_matches - 1:  # If player has finished preliminary games
                 new_row = pd.DataFrame({'player': [players[i]], 'elo': [new_elos[i]]})
                 elo_scores = pd.concat([elo_scores, new_row], ignore_index=True)
                 prelim_elo_scores = prelim_elo_scores[prelim_elo_scores['player'] != players[i]]
             else:  # Update the preliminary player's Elo and games count
                 prelim_elo_scores.loc[prelim_elo_scores['player'] == players[i], 'elo'] = new_elos[i]
-                prelim_elo_scores.loc[prelim_elo_scores['player'] == players[i], 'games'] = matches_played + 1
+                prelim_elo_scores.loc[prelim_elo_scores['player'] == players[i], 'games'] = matches_played + game_weight
         elif not (is_preliminary[0] or is_preliminary[1]):  # updates the scores if both players aren't preliminary
             elo_scores.loc[elo_scores['player'] == players[i], 'elo'] = new_elos[i]
-        else:
+        else:  # rating for an established player doesn't change against a preliminary player
             new_elos[i] = elos[i]
 
     # Append the results to the historical results log
-    prev_results.append(f' ({round(new_elos[0] - elos[0], 1)}) ({new_elos[0]}) {players[0]} {scores[0]}-{scores[1]} '
+    prev_results.append(f' {match_date}: ({round(new_elos[0] - elos[0], 1)}) ({new_elos[0]}) {players[0]} {scores[0]}-{scores[1]} '
                         f'{players[1]} ({new_elos[1]}) ({round(new_elos[1] - elos[1], 1)})\n')
 
 # Save the updated Elo scores back to the files
@@ -213,7 +223,7 @@ prelim_elo_scores.sort_values(by="elo", ascending=False, inplace=True)
 prelim_elo_scores.to_excel('updated_prelim_elo_scores.xlsx', index=False)
 
 # Save the updated historical results back to the text file
-#save_historical_results(historical_results_path, prev_results)
+save_historical_results(historical_results_path, prev_results)
 
 prediction_types = ['total', 'full', 'half', 'no']
 print(f"Elo scores updated successfully! Processed {len(games)} games.")
